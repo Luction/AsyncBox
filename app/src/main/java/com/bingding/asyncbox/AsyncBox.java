@@ -103,7 +103,7 @@ public class AsyncBox {
                         runnable.run();
                     }
                     isCompleted.compareAndSet(false,true);
-                    Log.i(TAG, "finish");
+                    Log.i(TAG, "finish main thread!");
                     if(next != null) {
                         next.prepareAction();
                     }
@@ -161,7 +161,7 @@ public class AsyncBox {
                         mCurrentAction.runnable.run();
                     }
                     mCurrentAction.isCompleted.compareAndSet(false, true);
-                    Log.i(TAG,"finish");
+                    Log.i(TAG, "finish thread" + mCurrentAction.thread);
                     if(mCurrentAction.next != null){
                         mCurrentAction.next.prepareAction();
                     }
