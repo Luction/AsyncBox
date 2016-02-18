@@ -10,7 +10,7 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
- * Created by xuerufeng on 16/2/18.
+ * Created by bingding on 16/2/18.
  */
 public class AsyncBox {
 
