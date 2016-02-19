@@ -16,8 +16,8 @@ public class AsyncBox {
 
     private static final String TAG = "AsyncBox";
 
-    private static Map<Integer, AsyncThread> THREAD_MAP = new ConcurrentHashMap<>();
-    private static Map<Integer, BlockingQueue<AsyncAction>> ACTION_MAP = new ConcurrentHashMap<>();
+    private static Map<Integer, AsyncThread> THREAD_MAP = new ConcurrentHashMap<Integer, AsyncThread>();
+    private static Map<Integer, BlockingQueue<AsyncAction>> ACTION_MAP = new ConcurrentHashMap<Integer, BlockingQueue<AsyncAction>>();
     private static Patrol PATROL;
 
 
@@ -43,28 +43,43 @@ public class AsyncBox {
 
     }
 
-    public static AsyncWorker post(Callable callable) {
-        return new AsyncWorker().post(callable);
+    public static AsyncWorker post(Observable observable) {
+        return new AsyncWorker().post(observable);
     }
 
-    public static AsyncWorker post(int thread, Callable callable) {
-        return new AsyncWorker().post(thread, callable);
+    public static AsyncWorker post(int thread, Observable observable) {
+        return new AsyncWorker().post(thread, observable);
+    }
+
+    public static AsyncWorker observerOn(int thread) {
+        return new AsyncWorker().observeOn(thread);
     }
 
     public static AsyncWorker timeout(long timeout) {
         return new AsyncWorker().timeout(timeout);
     }
 
-    public AsyncWorker observerOn(int thread, Observer observer) {
-        return new AsyncWorker().observerOn(thread, observer);
-    }
 
-    public static AsyncWorker observerOn(Observer observer) {
-        return new AsyncWorker().observerOn(observer);
-    }
+    public static abstract class Observable<T> {
 
-    public interface Callable {
-        int call();
+        private int thread = DEFAULT_THREAD;
+
+        public abstract T call();
+
+        private void run(AtomicBoolean isCompleted) {
+            final T result = call();
+            if (!isCompleted.compareAndSet(true, true)) {
+                post(thread, new Runnable() {
+                    @Override
+                    public void run() {
+                        onResult(result);
+                    }
+                });
+            }
+
+        }
+
+        public abstract void onResult(T t);
     }
 
     public interface TimeOutObserver {
@@ -74,7 +89,6 @@ public class AsyncBox {
     public static class AsyncWorker {
 
         private AsyncAction mLastAction;
-        private Observer mObserver;
         private long mTimeOut;
         private int mTimeOutThread = DEFAULT_THREAD;
         private TimeOutObserver mTimeOutObserver;
@@ -100,21 +114,21 @@ public class AsyncBox {
             return post(DEFAULT_THREAD, runnable);
         }
 
-        public AsyncWorker observerOn(int thread, Observer observer) {
-            mObserver = observer;
+        public AsyncWorker observeOn(int thread) {
             mObserverThread = thread;
             return this;
         }
 
-        public AsyncWorker post(int thread, Callable callable) {
+        public AsyncWorker post(int thread, Observable observable) {
             AsyncAction asyncAction = new AsyncAction();
-            asyncAction.callable = callable;
+            asyncAction.observable = observable;
             asyncAction.thread = thread;
-            asyncAction.observer = mObserver;
             asyncAction.timeout = mTimeOut;
             asyncAction.timeOutObserver = mTimeOutObserver;
             asyncAction.timeoutThread = mTimeOutThread;
-            asyncAction.observerThread = mObserverThread;
+            if (observable != null) {
+                asyncAction.observable.thread = mObserverThread;
+            }
             if (mLastAction == null || mLastAction.isCompleted.compareAndSet(true, true)) {
                 asyncAction.prepareAction();
             } else {
@@ -124,12 +138,8 @@ public class AsyncBox {
             return this;
         }
 
-        public AsyncWorker post(Callable callable) {
-            return post(DEFAULT_THREAD, callable);
-        }
-
-        public AsyncWorker observerOn(Observer observer) {
-            return observerOn(DEFAULT_THREAD, observer);
+        public AsyncWorker post(Observable observable) {
+            return post(DEFAULT_THREAD, observable);
         }
 
         public AsyncWorker timeout(long timeout) {
@@ -181,41 +191,12 @@ public class AsyncBox {
         }
     }
 
-    private static void call(final AsyncAction action) {
-        int result = action.callable.call();
-        if (action.observer != null) {
-            if (result == RESULT_OK) {
-                post(action.observerThread, new Runnable() {
-                    @Override
-                    public void run() {
-                        action.observer.onCompleted();
-                    }
-                });
-            } else {
-                post(action.observerThread, new Runnable() {
-                    @Override
-                    public void run() {
-                        action.observer.onError();
-                    }
-                });
-            }
-        }
-    }
-
-    public interface Observer {
-        void onCompleted();
-
-        void onError();
-    }
-
     private static class AsyncAction implements Comparable<AsyncAction> {
         private Runnable runnable;
-        private Callable callable;
+        private Observable observable;
         private AsyncAction next;
-        private Observer observer;
         private int timeoutThread;
         private TimeOutObserver timeOutObserver;
-        private int observerThread;
         private int thread;
         private long timeout;
         private AtomicBoolean isCompleted = new AtomicBoolean();
@@ -231,8 +212,8 @@ public class AsyncBox {
                 public void run() {
                     if (runnable != null) {
                         runnable.run();
-                    } else if (callable != null) {
-                        call(AsyncAction.this);
+                    } else if (observable != null) {
+                        observable.run(isCompleted);
                     }
                     isCompleted.compareAndSet(false, true);
                     Log.i(TAG, "finish main thread!");
@@ -256,6 +237,9 @@ public class AsyncBox {
                     BlockingQueue<AsyncAction> blockingQueue = new PriorityBlockingQueue<>();
                     AsyncThread asyncThread = new AsyncThread(blockingQueue);
                     asyncThread.start();
+                    if (thread == IO) {
+                        asyncThread.setName("IO");
+                    }
                     THREAD_MAP.put(thread, asyncThread);
                     ACTION_MAP.put(thread, blockingQueue);
                 }
@@ -294,7 +278,7 @@ public class AsyncBox {
                     mCurrentStartTime = System.currentTimeMillis();
                     if (asyncAction.runnable != null) {
                         asyncAction.runnable.run();
-                    } else if (asyncAction.callable != null) {
+                    } else if (asyncAction.observable != null) {
                         call(asyncAction);
                     }
                     mCurrentStartTime = 0;
@@ -312,24 +296,7 @@ public class AsyncBox {
         }
 
         private void call(final AsyncAction action) {
-            int result = action.callable.call();
-            if (action.observer != null && !action.isCompleted.compareAndSet(true, true) && !isTimeOut()) {
-                if (result == RESULT_OK) {
-                    post(action.observerThread, new Runnable() {
-                        @Override
-                        public void run() {
-                            action.observer.onCompleted();
-                        }
-                    });
-                } else {
-                    post(action.observerThread, new Runnable() {
-                        @Override
-                        public void run() {
-                            action.observer.onError();
-                        }
-                    });
-                }
-            }
+            action.observable.run(action.isCompleted);
         }
 
         boolean isQuited() {

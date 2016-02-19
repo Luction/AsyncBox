@@ -24,38 +24,35 @@ public class MainActivity extends AppCompatActivity {
                         Log.i(TAG, "run in main .  timeout !!!");
                     }
                 })
-                .observerOn(new AsyncBox.Observer() {
+                .post(AsyncBox.IO, new AsyncBox.Observable<String>() {
                     @Override
-                    public void onCompleted() {
-                        Log.i(TAG, "observerOn  main onCompleted");
-
-                        ((TextView) findViewById(R.id.tv)).setText("Hello AsyncBox onCompleted~~~");
-
-                    }
-
-                    @Override
-                    public void onError() {
-                        Log.i(TAG, "observerOn main onError");
-                        ((TextView) findViewById(R.id.tv)).setText("Hello AsyncBox onError~~~");
-
-                    }
-                })
-                .post(AsyncBox.IO, new AsyncBox.Callable() {
-                    @Override
-                    public int call() {
-                        Log.i(TAG, "call in  IO  main return ok");
+                    public String call() {
+                        Log.i(TAG, "run in " + Thread.currentThread().getName());
                         try {
                             Thread.sleep(5000);
                         } catch (InterruptedException e) {
                             e.printStackTrace();
                         }
-                        return AsyncBox.RESULT_OK;
+                        return "nihao";
                     }
-                }).post(AsyncBox.IO, new AsyncBox.Callable() {
+
+                    @Override
+                    public void onResult(String o) {
+                        Log.i(TAG, "run in " + Thread.currentThread().getName() + " result:" + o);
+                        ((TextView) findViewById(R.id.tv)).setText(o);
+                    }
+                }).post(AsyncBox.IO, new AsyncBox.Observable<Integer>() {
             @Override
-            public int call() {
-                Log.i(TAG, "call in main return error");
-                return AsyncBox.RESULT_ERROR;
+            public Integer call() {
+                Log.i(TAG, "run in " + Thread.currentThread().getName());
+                return 3;
+            }
+
+            @Override
+            public void onResult(Integer o) {
+                Log.i(TAG, "run in " + Thread.currentThread().getName() + " result:" + o);
+                ((TextView) findViewById(R.id.tv)).setText(String.valueOf(o));
+
             }
         });
 
@@ -90,7 +87,7 @@ public class MainActivity extends AppCompatActivity {
 //                ((TextView) findViewById(R.id.tv)).setText("Hello AsyncBox onError~~~");
 //
 //            }
-//        }).post(AsyncBox.IO, new AsyncBox.Callable() {
+//        }).post(AsyncBox.IO, new AsyncBox.Observable() {
 //            @Override
 //            public int call() {
 //                Log.i(TAG, "call in  IO  main return ok");
@@ -101,7 +98,7 @@ public class MainActivity extends AppCompatActivity {
 //                }
 //                return AsyncBox.RESULT_OK;
 //            }
-//        }).post(new AsyncBox.Callable() {
+//        }).post(new AsyncBox.Observable() {
 //            @Override
 //            public int call() {
 //                Log.i(TAG, "call in main return error");
