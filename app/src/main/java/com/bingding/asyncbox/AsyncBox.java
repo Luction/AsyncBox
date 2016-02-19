@@ -14,10 +14,10 @@ import java.util.concurrent.atomic.AtomicBoolean;
  */
 public class AsyncBox {
 
-    private static final String TAG="AsyncBox";
+    private static final String TAG = "AsyncBox";
 
-    private static Map<Integer,AsyncThread> THREAD_MAP = new ConcurrentHashMap<>();
-    private static Map<Integer,BlockingQueue<AsyncAction>> ACTION_MAP = new ConcurrentHashMap<>();
+    private static Map<Integer, AsyncThread> THREAD_MAP = new ConcurrentHashMap<>();
+    private static Map<Integer, BlockingQueue<AsyncAction>> ACTION_MAP = new ConcurrentHashMap<>();
     private static Patrol PATROL;
 
 
@@ -30,16 +30,16 @@ public class AsyncBox {
 
     private static Handler HANDLER = new Handler();
 
-    public static void setDefaultThread(int id){
+    public static void setDefaultThread(int id) {
         DEFAULT_THREAD = id;
     }
 
-    public static AsyncWorker post(Runnable runnable){
+    public static AsyncWorker post(Runnable runnable) {
         return new AsyncWorker().post(runnable);
     }
 
-    public static AsyncWorker post(int thread, Runnable runnable){
-        return new AsyncWorker().post(thread,runnable);
+    public static AsyncWorker post(int thread, Runnable runnable) {
+        return new AsyncWorker().post(thread, runnable);
 
     }
 
@@ -49,6 +49,10 @@ public class AsyncBox {
 
     public static AsyncWorker post(int thread, Callable callable) {
         return new AsyncWorker().post(thread, callable);
+    }
+
+    public static AsyncWorker timeout(long timeout) {
+        return new AsyncWorker().timeout(timeout);
     }
 
     public AsyncWorker observerOn(int thread, Observer observer) {
@@ -63,27 +67,37 @@ public class AsyncBox {
         int call();
     }
 
-    public static class AsyncWorker{
+    public interface TimeOutObserver {
+        void onTimeOut();
+    }
 
-        private AsyncAction lastAction;
+    public static class AsyncWorker {
+
+        private AsyncAction mLastAction;
         private Observer mObserver;
+        private long mTimeOut;
+        private int mTimeOutThread = DEFAULT_THREAD;
+        private TimeOutObserver mTimeOutObserver;
         private int mObserverThread = DEFAULT_THREAD;
 
-        public AsyncWorker post(int thread, Runnable runnable){
+        public AsyncWorker post(int thread, Runnable runnable) {
             AsyncAction asyncAction = new AsyncAction();
             asyncAction.runnable = runnable;
+            asyncAction.timeout = mTimeOut;
+            asyncAction.timeOutObserver = mTimeOutObserver;
+            asyncAction.timeoutThread = mTimeOutThread;
             asyncAction.thread = thread;
-            if(lastAction == null || lastAction.isCompleted.compareAndSet(true,true)) {
+            if (mLastAction == null || mLastAction.isCompleted.compareAndSet(true, true)) {
                 asyncAction.prepareAction();
-            }else {
-                lastAction.next = asyncAction;
+            } else {
+                mLastAction.next = asyncAction;
             }
-            lastAction = asyncAction;
+            mLastAction = asyncAction;
             return this;
         }
 
-        public AsyncWorker post(Runnable runnable){
-            return post(DEFAULT_THREAD,runnable);
+        public AsyncWorker post(Runnable runnable) {
+            return post(DEFAULT_THREAD, runnable);
         }
 
         public AsyncWorker observerOn(int thread, Observer observer) {
@@ -97,13 +111,16 @@ public class AsyncBox {
             asyncAction.callable = callable;
             asyncAction.thread = thread;
             asyncAction.observer = mObserver;
+            asyncAction.timeout = mTimeOut;
+            asyncAction.timeOutObserver = mTimeOutObserver;
+            asyncAction.timeoutThread = mTimeOutThread;
             asyncAction.observerThread = mObserverThread;
-            if (lastAction == null || lastAction.isCompleted.compareAndSet(true, true)) {
+            if (mLastAction == null || mLastAction.isCompleted.compareAndSet(true, true)) {
                 asyncAction.prepareAction();
             } else {
-                lastAction.next = asyncAction;
+                mLastAction.next = asyncAction;
             }
-            lastAction = asyncAction;
+            mLastAction = asyncAction;
             return this;
         }
 
@@ -115,22 +132,48 @@ public class AsyncBox {
             return observerOn(DEFAULT_THREAD, observer);
         }
 
+        public AsyncWorker timeout(long timeout) {
+            mTimeOut = timeout;
+            return this;
+        }
+
+        public AsyncWorker cancelTimeOut() {
+            mTimeOut = 0;
+            mTimeOutObserver = null;
+            mObserverThread = DEFAULT_THREAD;
+            return this;
+        }
+
+        public AsyncWorker observerTimeout(TimeOutObserver timeOutObserver) {
+            return observerTimeout(DEFAULT_THREAD, timeOutObserver);
+        }
+
+        public AsyncWorker observerTimeout(int thread, TimeOutObserver observer) {
+            mObserverThread = thread;
+            mTimeOutObserver = observer;
+            return this;
+        }
+
     }
 
-
-    private static class Patrol extends Thread{
+    private static class Patrol extends Thread {
 
         @Override
         public void run() {
-            while (true){
-                for(AsyncThread thread : THREAD_MAP.values()){
-                    if(!thread.isQuited() && !thread.isAlive()){
+            while (true) {
+
+                for (AsyncThread thread : THREAD_MAP.values()) {
+
+                    if (!thread.isQuited() && !thread.isAlive()) {
                         AsyncThread asyncThread = new AsyncThread(thread.mActionQueue);
                         asyncThread.start();
+                    } else if (!thread.isCompleted() && thread.isTimeOut()) {
+                        thread.timeout();
+                        thread.interrupt();
                     }
                 }
                 try {
-                    Thread.sleep(3000);
+                    Thread.sleep(1000);
                 } catch (InterruptedException e) {
                     e.printStackTrace();
                 }
@@ -165,13 +208,16 @@ public class AsyncBox {
         void onError();
     }
 
-    private static class AsyncAction implements Comparable<AsyncAction>{
+    private static class AsyncAction implements Comparable<AsyncAction> {
         private Runnable runnable;
         private Callable callable;
         private AsyncAction next;
         private Observer observer;
+        private int timeoutThread;
+        private TimeOutObserver timeOutObserver;
         private int observerThread;
         private int thread;
+        private long timeout;
         private AtomicBoolean isCompleted = new AtomicBoolean();
 
         @Override
@@ -179,94 +225,140 @@ public class AsyncBox {
             return 0;
         }
 
-        private void runOnMain(final Runnable runnable){
+        private void runOnMain(final Runnable runnable) {
             HANDLER.post(new Runnable() {
                 @Override
                 public void run() {
-                    if(runnable != null) {
+                    if (runnable != null) {
                         runnable.run();
                     } else if (callable != null) {
                         call(AsyncAction.this);
                     }
-                    isCompleted.compareAndSet(false,true);
+                    isCompleted.compareAndSet(false, true);
                     Log.i(TAG, "finish main thread!");
-                    if(next != null) {
+                    if (next != null) {
                         next.prepareAction();
                     }
                 }
             });
         }
 
-        private void prepareAction(){
-            Log.i(TAG,"prepare");
-            if(MAIN == thread){
+        private void prepareAction() {
+            Log.i(TAG, "prepare");
+            if (MAIN == thread) {
                 runOnMain(runnable);
-            }else {
-                if(!THREAD_MAP.containsKey(thread)){
-                    if(PATROL == null){
+            } else {
+                if (!THREAD_MAP.containsKey(thread)) {
+                    if (PATROL == null) {
                         PATROL = new Patrol();
                         PATROL.start();
                     }
                     BlockingQueue<AsyncAction> blockingQueue = new PriorityBlockingQueue<>();
                     AsyncThread asyncThread = new AsyncThread(blockingQueue);
                     asyncThread.start();
-                    THREAD_MAP.put(thread,asyncThread);
-                    ACTION_MAP.put(thread,blockingQueue);
+                    THREAD_MAP.put(thread, asyncThread);
+                    ACTION_MAP.put(thread, blockingQueue);
                 }
                 BlockingQueue<AsyncAction> queue = ACTION_MAP.get(thread);
-                if(queue != null){
-
+                if (queue != null) {
                     try {
                         queue.put(this);
                     } catch (InterruptedException e) {
                         e.printStackTrace();
                     }
-                }else {
-                    Log.e(TAG,"action queue un find!");
+                } else {
+                    Log.e(TAG, "action queue un find!");
                 }
             }
         }
     }
 
-    private static class AsyncThread extends Thread{
+    private static class AsyncThread extends Thread {
 
         private boolean mIsQuited;
         private BlockingQueue<AsyncAction> mActionQueue;
         private AsyncAction mCurrentAction;
+        private volatile long mCurrentStartTime;
 
-        AsyncThread(BlockingQueue<AsyncAction> asyncActions){
+        AsyncThread(BlockingQueue<AsyncAction> asyncActions) {
             mActionQueue = asyncActions;
         }
 
         @Override
         public void run() {
-            while (!mIsQuited){
+            while (!mIsQuited) {
                 try {
-                    mCurrentAction = mActionQueue.take();
-                    if(mCurrentAction.runnable != null){
-                        mCurrentAction.runnable.run();
-                    } else if (mCurrentAction.callable != null) {
-                        call(mCurrentAction);
+                    mCurrentStartTime = 0;
+                    AsyncAction asyncAction = mActionQueue.take();
+                    mCurrentAction = asyncAction;
+                    mCurrentStartTime = System.currentTimeMillis();
+                    if (asyncAction.runnable != null) {
+                        asyncAction.runnable.run();
+                    } else if (asyncAction.callable != null) {
+                        call(asyncAction);
                     }
-                    mCurrentAction.isCompleted.compareAndSet(false, true);
-                    Log.i(TAG, "finish thread" + mCurrentAction.thread);
-                    if(mCurrentAction.next != null){
-                        mCurrentAction.next.prepareAction();
+                    mCurrentStartTime = 0;
+                    asyncAction.isCompleted.compareAndSet(false, true);
+                    Log.i(TAG, "finish thread" + asyncAction.thread);
+                    if (asyncAction.next != null) {
+                        asyncAction.next.prepareAction();
                     }
                 } catch (InterruptedException e) {
-                    e.printStackTrace();
+                    Log.e(TAG, "thread interrupt istimeout " + isTimeOut());
                 }
 
             }
+
         }
 
-        boolean isQuited(){
+        private void call(final AsyncAction action) {
+            int result = action.callable.call();
+            if (action.observer != null && !action.isCompleted.compareAndSet(true, true) && !isTimeOut()) {
+                if (result == RESULT_OK) {
+                    post(action.observerThread, new Runnable() {
+                        @Override
+                        public void run() {
+                            action.observer.onCompleted();
+                        }
+                    });
+                } else {
+                    post(action.observerThread, new Runnable() {
+                        @Override
+                        public void run() {
+                            action.observer.onError();
+                        }
+                    });
+                }
+            }
+        }
+
+        boolean isQuited() {
             return mIsQuited;
         }
 
-        void quit(){
+        boolean isTimeOut() {
+            return mCurrentAction != null && mCurrentAction.timeout != 0 && mCurrentStartTime != 0 && System.currentTimeMillis() > mCurrentStartTime + mCurrentAction.timeout;
+        }
+
+        boolean isCompleted() {
+            return mCurrentAction == null && mCurrentAction.isCompleted.compareAndSet(true, true);
+        }
+
+        void quit() {
             mIsQuited = true;
             interrupt();
+        }
+
+        void timeout() {
+            if (mCurrentAction != null && mCurrentAction.timeOutObserver != null) {
+                post(mCurrentAction.timeoutThread, new Runnable() {
+                    @Override
+                    public void run() {
+                        mCurrentAction.timeOutObserver.onTimeOut();
+                    }
+                });
+            }
+            mCurrentAction.isCompleted.compareAndSet(false, true);
         }
     }
 
